@@ -1,0 +1,8 @@
+nginx-default:
+  image: "nginx:1.14"
+  ports:
+    - 80:80
+    - 443:443
+  volumes:
+    - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    - nginx-sites-enabled:/etc/nginx/sites-enabled:ro
