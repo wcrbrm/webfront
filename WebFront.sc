@@ -7,7 +7,8 @@ import scala.collection.mutable.ListBuffer
 /// PATHS
 /// --- --- --- --- --- --- --- --- --- ---
 
-class LocationPath( path: String, prefix: String = "") {
+class LocationPath(val path: String, val prefix: String = "") {
+  def getPath = path
   def asString: String = {
     if (!prefix.isEmpty)
       prefix + " " + path
@@ -17,7 +18,10 @@ class LocationPath( path: String, prefix: String = "") {
 }
 
 class RegexPath(path: String) extends LocationPath(path, prefix = "~")
-object PhpPath extends LocationPath(path = ".php$", prefix = "~")
+class ExactPath(path: String) extends LocationPath(path, prefix = "=")
+class ExtensionPath(ext: String) extends LocationPath(path = "\\." + ext + "$", prefix = "~")
+class ExtensionsPath(extensions: List[String]) extends LocationPath(path = "\\.(" + extensions.mkString("|") + ")$", prefix = "~")
+object PhpPath extends ExtensionPath("php")
 object RootPath extends LocationPath("/")
 object WellKnownPath extends LocationPath(path = "/.well-known", prefix = "^")
 
@@ -118,19 +122,62 @@ class NestedConfig {
 // trait Allow
 // object AllowAll extends Allow {}
 
-class Location( path: LocationPath, logging: Logging = NoLogging, root: String = "", // allow: Allow,
-                children: List[String] = List()) extends NestedConfig {
+class Cors { 
+  val allowedOrigin: String = "*"
+  val allowedCredentials: Boolean = true
+  val allowedMethods: List[String] = List("GET", "POST", "PUT", "DELETE", "OPTIONS");
+  val allowedHeaders: List[String] = List(
+    "Accept", "Authorization", "Cache-Control",
+    "Content-Type", "DNT", "If-Modified-Since",
+    "Keep-Alive", "Origin", "User-Agent", "X-Requested-With"
+  )
+  def asString: String = ""
+}
+
+object NoCors extends Cors
+object WithCors extends Cors {
+  override def asString: String = {
+    val lb = new ListBuffer[String]();
+
+    lb += "add_header 'Access-Control-Allow-Origin' '" + allowedOrigin + "';"
+    lb += "add_header 'Access-Control-Allow-Credentials' '" + allowedCredentials.toString + "';"
+    lb += "add_header 'Access-Control-Allow-Methods' '" + allowedMethods.mkString(",") + "';"
+    lb += "add_header 'Access-Control-Allow-Headers' '" + allowedHeaders.mkString(",") + "';"
+
+    lb += "if ($request_method = 'OPTIONS') {"
+    lb += "  # Tell client that this pre-flight info is valid for 20 days"
+    lb += "  add_header 'Access-Control-Max-Age' 1728000;"
+    lb += "  add_header 'Content-Type' 'text/plain charset=UTF-8';"
+    lb += "  add_header 'Content-Length' 0;"
+    lb += "  return 204;"
+    lb += "}\n"
+
+    lb.mkString("\n")
+  }
+}
+
+
+
+class Location( path: LocationPath, 
+    logging: Logging = NoLogging, 
+    root: String = "",
+    cors: Cors = NoCors,
+    children: List[String] = List(),
+    locations: List[Location] = List()
+  ) extends NestedConfig {
   def asString: String = {
     val props: ListBuffer[String] = new ListBuffer()
     if (!root.isEmpty) props += s"root ${root};\n"
     val log: String = logging.asString
     if (!log.isEmpty) props += log
-    "location " + this.path.asString + wrap(props.toList.mkString + children.mkString)
+    "\n" + "location " + this.path.asString + wrap(
+      cors.asString + props.toList.mkString  + locations.map(_.asString).mkString + children.mkString
+    )
   }
 }
 
-class DeniedLocation(path: LocationPath) extends Location(path, children = List("deny all;"))
-class DefaultLocation(root: String, logging: Logging = NoLogging)
+case class DeniedLocation(path: LocationPath) extends Location(path, children = List("deny all;"))
+case class DefaultLocation(root: String, logging: Logging = NoLogging)
   extends Location(RootPath, logging = logging, root = root, children = List("try_files $uri $uri/ =404;"))
 
 
@@ -164,6 +211,7 @@ class ServerTimeout (
     if (clientBody >= 0) sb.append(s"client_body_timeout = ${clientBody};\n")
     if (sendTimeout >= 0) sb.append(s"send_timeout_timeout = ${sendTimeout};\n")
     if (fastGgiRead >= 0) sb.append(s"fastcgi_read_timeout = ${fastGgiRead};\n")
+    if (!isEmpty) sb.append("#TIMEOUTS: END\n")
     sb.toString
   }
 }
@@ -183,6 +231,7 @@ class ServerSslOptions(
   def asString: String = {
     val sb: StringBuffer = new StringBuffer();
     if (!isEmpty) {
+      sb.append("\n# SSL CONFIG: START\n")
       sb.append("ssl on;\n")
       sb.append(s"ssl_certificate ${pemFolder}/fullchain.pem;\n")
       sb.append(s"ssl_certificate_key ${pemFolder}/privkey.pem;\n")
@@ -194,6 +243,7 @@ class ServerSslOptions(
       if (sts) {
         sb.append( "add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\";\n")
       }
+      sb.append("# SSL CONFIG: END\n\n")
     }
     sb.toString
   }
@@ -245,7 +295,11 @@ class Server(
   }
 }
 
-class Upstream(name: String, servers: List[String] = List()) extends NestedConfig {
+case class UpstreamServer(host: String, port:Int) {
+  def asString: String = host + ":" + port
+}
+
+case class Upstream(name: String, servers: List[UpstreamServer] = List()) extends NestedConfig {
 
   // (round robin) - default
   // The default load balancing algorithm that is used if no other balancing directives are present.
@@ -258,7 +312,7 @@ class Upstream(name: String, servers: List[String] = List()) extends NestedConfi
       children += algorithm;
     }
     for (server <- servers) {
-      children += "server " + server + ";\n"
+      children += "server " + server.asString + ";\n"
     }
     "upstream " + name + " " + wrap(children.mkString);
   }
