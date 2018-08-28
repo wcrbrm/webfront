@@ -42,7 +42,7 @@ class Logging( logging: String = "", alias: String = "") {
   }
 }
 
-class CommonLogging(alias: String) extends Logging("main", alias)
+case class CommonLogging(alias: String) extends Logging("main", alias)
 object NoLogging extends Logging
 
 /// --- --- --- --- --- --- --- --- --- ---
